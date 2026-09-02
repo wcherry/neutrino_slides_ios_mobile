@@ -1,0 +1,157 @@
+import SwiftUI
+import NeutrinoCore
+import NeutrinoAuth
+import NeutrinoCrypto
+import NeutrinoUI
+
+// MARK: - NeutrinoSlidesApp
+
+/// Composition root. Every service is constructed once here and injected into the view tree;
+/// nothing reaches for a singleton.
+///
+/// The wiring is deliberately explicit rather than hidden behind a container: the services form a
+/// small graph with a genuine cycle — the drive service needs the content service, which needs the
+/// auth service — and writing it out is what makes that cycle visible and its ownership (`weak`)
+/// obvious.
+@main
+struct NeutrinoSlidesApp: App {
+
+    // MARK: - Services
+
+    // Built in `init()` rather than given default values here: defaults are evaluated before the
+    // initializer body runs, and the shared services resolve their Keychain namespace through
+    // `NeutrinoApp.current` the moment they are constructed.
+    @StateObject private var authService: AuthService
+    @StateObject private var settings: AppSettings
+    @StateObject private var biometricService: BiometricAuthService
+    @StateObject private var deviceSessionService: DeviceSessionService
+    @StateObject private var driveService: SlidesDriveService
+    @StateObject private var contentService: SlideContentService
+    @StateObject private var themeService: SlideThemeService
+    @StateObject private var networkMonitor: NetworkMonitor
+    @StateObject private var deepLinkRouter: DeepLinkRouter
+
+    @Environment(\.scenePhase) private var scenePhase
+
+    // MARK: - Init
+
+    init() {
+        // Before anything else. Every shared service resolves its Keychain namespace — `nslide.*`
+        // — through this, so a service constructed before it would read the wrong app's session.
+        NeutrinoApp.configure(.slides)
+        NeutrinoBrand.use(.slides)
+
+        _authService = StateObject(wrappedValue: AuthService())
+        _settings = StateObject(wrappedValue: AppSettings())
+        _biometricService = StateObject(wrappedValue: BiometricAuthService(
+            isFeatureEnabled: FeatureFlags.biometricLock
+        ))
+        _deviceSessionService = StateObject(wrappedValue: DeviceSessionService())
+        _driveService = StateObject(wrappedValue: SlidesDriveService())
+        _contentService = StateObject(wrappedValue: SlideContentService())
+        _themeService = StateObject(wrappedValue: SlideThemeService())
+        _networkMonitor = StateObject(wrappedValue: NetworkMonitor())
+        _deepLinkRouter = StateObject(wrappedValue: DeepLinkRouter())
+    }
+
+    // MARK: - Scene
+
+    var body: some Scene {
+        WindowGroup {
+            RootView()
+                .environmentObject(authService)
+                .environmentObject(settings)
+                .environmentObject(biometricService)
+                .environmentObject(deviceSessionService)
+                .environmentObject(driveService)
+                .environmentObject(contentService)
+                .environmentObject(themeService)
+                .environmentObject(networkMonitor)
+                .environmentObject(deepLinkRouter)
+                .preferredColorScheme(settings.theme.colorScheme)
+                .onOpenURL { url in
+                    guard FeatureFlags.appLinks else { return }
+                    deepLinkRouter.handle(url)
+                }
+                .task { await configure() }
+        }
+        .onChange(of: scenePhase) { phase in
+            handle(phase)
+        }
+    }
+
+    // MARK: - Wiring
+
+    @MainActor
+    private func configure() async {
+        // Idempotent: `.task` can run again if the scene is rebuilt, and every assignment here is a
+        // plain reference write.
+        contentService.authService = authService
+
+        driveService.authService = authService
+        driveService.contentService = contentService
+        driveService.networkMonitor = networkMonitor
+
+        themeService.authService = authService
+        deviceSessionService.authService = authService
+
+        biometricService.lockOnLaunch()
+
+        // Top up this device's retired keys from the account's key file. Enrolment already does
+        // this, so on a healthy install it finds nothing; it is here for the device enrolled before
+        // the key file existed, and for the one that was offline when its key arrived. One request,
+        // and a failure is not worth surfacing — the next launch tries again.
+        KeyFileService.shared.authService = authService
+        if authService.isAuthenticated && KeyImportService.hasStoredKeys() {
+            Task { try? await KeyFileService.shared.restoreArchivedKeys() }
+        }
+
+        if authService.isAuthenticated {
+            await authService.refreshTokenIfNeeded()
+        }
+    }
+
+    // MARK: - Lifecycle
+
+    @MainActor
+    private func handle(_ phase: ScenePhase) {
+        switch phase {
+        case .active:
+            biometricService.sceneDidBecomeActive()
+        case .inactive:
+            // Fires *before* `.background`, and is when iOS takes the app-switcher snapshot.
+            biometricService.sceneDidBecomeInactive()
+        case .background:
+            biometricService.sceneDidEnterBackground()
+        @unknown default:
+            break
+        }
+    }
+}
+
+// MARK: - RootView
+
+/// Chooses between the login screen, the app, and the lock overlay.
+private struct RootView: View {
+
+    @EnvironmentObject private var authService: AuthService
+    @EnvironmentObject private var biometricService: BiometricAuthService
+
+    var body: some View {
+        ZStack {
+            if authService.isAuthenticated {
+                ContentView()
+            } else {
+                LoginView()
+            }
+
+            // Drawn over everything, including the login screen: the switcher snapshot is taken
+            // regardless of which one is showing.
+            if biometricService.shouldPresentOverlay {
+                LockScreenView(biometricService: biometricService)
+                    .zIndex(1)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: biometricService.shouldPresentOverlay)
+    }
+}
