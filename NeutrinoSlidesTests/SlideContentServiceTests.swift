@@ -76,15 +76,29 @@ final class SlideContentServiceTests: XCTestCase {
     }
 
     func testAKeyVersionThisDeviceLacksIsReportedAsSuchRatherThanAsCorruption() throws {
+        // Sealed to a key this device does not hold. Sealing to the device's own key and naming v7
+        // would now open — a ref naming the wrong version is repaired, not refused.
         let dek = Sodium().secretStream.xchacha20poly1305.key()
-        let sealed = try service.sealDEK(dek)
+        let absentKey = Sodium().box.keyPair()!
+        let sealed = Sodium().utils.bin2base64(
+            Sodium().box.seal(message: dek, recipientPublicKey: absentKey.publicKey)!,
+            variant: .URLSAFE_NO_PADDING)!
 
-        XCTAssertThrowsError(try service.unsealDEK(sealed.sealed, keyVersion: 7)) { error in
+        XCTAssertThrowsError(try service.unsealDEK(sealed, keyVersion: 7)) { error in
             guard case SlideContentError.missingKeyVersion(let version) = error else {
                 return XCTFail("expected missingKeyVersion, got \(error)")
             }
             XCTAssertEqual(version, 7)
         }
+    }
+
+    func testARefNamingTheWrongVersionStillOpens() throws {
+        // What the vault unlock produced on a rotated account: sealed to the key this device holds,
+        // recorded under a version that is not that key's.
+        let dek = Sodium().secretStream.xchacha20poly1305.key()
+        let sealed = try service.sealDEK(dek)
+
+        XCTAssertEqual(try service.unsealDEK(sealed.sealed, keyVersion: 7), dek)
     }
 
     func testWithNoKeyAtAllSealingSaysSoPlainly() {
