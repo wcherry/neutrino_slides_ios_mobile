@@ -16,6 +16,9 @@ import NeutrinoUI
 @main
 struct NeutrinoSlidesApp: App {
 
+    /// Routes an external display's scene to ``ExternalDisplaySceneDelegate``; nothing else.
+    @UIApplicationDelegateAdaptor(SlidesAppDelegate.self) private var appDelegate
+
     // MARK: - Services
 
     // Built in `init()` rather than given default values here: defaults are evaluated before the
@@ -32,6 +35,8 @@ struct NeutrinoSlidesApp: App {
     @StateObject private var themeService: SlideThemeService
     @StateObject private var networkMonitor: NetworkMonitor
     @StateObject private var deepLinkRouter: DeepLinkRouter
+    /// The one shared instance — see ``ExternalDisplayService`` for why it is.
+    @StateObject private var externalDisplay = ExternalDisplayService.shared
 
     @Environment(\.scenePhase) private var scenePhase
 
@@ -74,6 +79,7 @@ struct NeutrinoSlidesApp: App {
                 .environmentObject(themeService)
                 .environmentObject(networkMonitor)
                 .environmentObject(deepLinkRouter)
+                .environmentObject(externalDisplay)
                 .preferredColorScheme(settings.theme.colorScheme)
                 .onOpenURL { url in
                     guard FeatureFlags.appLinks else { return }

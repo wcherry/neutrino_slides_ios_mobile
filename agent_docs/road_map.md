@@ -109,7 +109,7 @@ Phase 1 — shipped
 | 8 | Slides: add, duplicate, delete, reorder by drag, and the ten layouts | `DeckEditorModel`, `LayoutGalleryView` |
 | 9 | Text formatting: the format bar and the format sheet | `ElementFormatBar` |
 | 10 | Design: theme gallery, per-slide background (colour, preset and custom gradients, image URL), transitions, slide master | `ThemeGalleryView`, `BackgroundPickerView` |
-| 12 | Presenter mode: full-screen playback, transitions, speaker notes, auto-advance, idle-timer hold | `PresenterView` |
+| 12 | Presenter mode: full-screen playback, transitions, speaker notes, auto-advance, idle-timer hold; on an external display (AirPlay, cable) the slide goes to that screen and the device shows a presenter console | `PresenterView`, `ExternalDisplayService` |
 | 22 | `.pptx` as the stored format: open any deck — the web's model when the package carries a trusted one, the slides themselves when it does not — and save a package PowerPoint opens with the model packed beside it | `Deck/OOXML/` (`PptxCodec`, `PptxReader`, `PptxWriter`) |
 | 24 | App lock: Face ID / Touch ID, grace period, app-switcher redaction | `neutrino_shared_ios` |
 
