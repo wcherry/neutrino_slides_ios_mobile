@@ -32,7 +32,7 @@ final class SlideContentServiceTests: XCTestCase {
         let dek = Sodium().secretStream.xchacha20poly1305.key()
         let text = Fixture.seededDeckJSON
 
-        let ciphertext = try service.encrypt(text: text, dek: dek,
+        let ciphertext = try service.encrypt(data: Data(text.utf8), dek: dek,
                                              xcss: Sodium().secretStream.xchacha20poly1305)
         let plaintext = try service.decrypt(data: ciphertext, dek: dek)
 
@@ -43,7 +43,7 @@ final class SlideContentServiceTests: XCTestCase {
     func testCiphertextCarriesTheSecretstreamHeader() throws {
         let dek = Sodium().secretStream.xchacha20poly1305.key()
 
-        let ciphertext = try service.encrypt(text: "x", dek: dek,
+        let ciphertext = try service.encrypt(data: Data("x".utf8), dek: dek,
                                              xcss: Sodium().secretStream.xchacha20poly1305)
 
         // 24-byte header plus the sealed message; the web client reads it the same way.
@@ -53,7 +53,7 @@ final class SlideContentServiceTests: XCTestCase {
     func testDecryptingWithTheWrongKeyFails() throws {
         let dek = Sodium().secretStream.xchacha20poly1305.key()
         let other = Sodium().secretStream.xchacha20poly1305.key()
-        let ciphertext = try service.encrypt(text: "secret", dek: dek,
+        let ciphertext = try service.encrypt(data: Data("secret".utf8), dek: dek,
                                              xcss: Sodium().secretStream.xchacha20poly1305)
 
         XCTAssertThrowsError(try service.decrypt(data: ciphertext, dek: other))
@@ -129,10 +129,10 @@ final class SlideContentServiceTests: XCTestCase {
         XCTAssertEqual(info?.isLive, true)
     }
 
-    func testAPptxIsNotANativePresentation() async throws {
+    func testASpreadsheetIsNotAPresentation() async throws {
         MockURLProtocol.respond(json: """
-        {"id":"d1","name":"Kickoff.pptx","sizeBytes":10,"folderId":null,
-         "mimeType":"\(SlideItem.pptxMIME)","updatedAt":"2026-08-10T12:00:00","yourRole":"owner"}
+        {"id":"d1","name":"Budget.xlsx","sizeBytes":10,"folderId":null,
+         "mimeType":"\(Fixture.spreadsheetMIME)","updatedAt":"2026-08-10T12:00:00","yourRole":"owner"}
         """)
 
         let info = try await service.fileInfo(for: "d1")
@@ -221,9 +221,40 @@ final class SlideContentServiceTests: XCTestCase {
         _ = try await service.createPresentation(name: "Kickoff", parentID: nil)
 
         let body = jsonObject(MockURLProtocol.bodies[0])
-        XCTAssertEqual(body["name"] as? String, "Kickoff")
+        // The extension is part of the file name so a download opens in PowerPoint.
+        XCTAssertEqual(body["name"] as? String, "Kickoff.pptx")
         XCTAssertEqual(body["mimeType"] as? String, SlideItem.slideMIME)
         XCTAssertNotNil(body["id"], "the id is client-supplied so the editor can open it at once")
+        XCTAssertNil(body["initialContent"], "the server would store it verbatim and unencrypted")
+    }
+
+    func testANewPresentationIsWrittenAsASealedPackageStraightAway() async throws {
+        MockURLProtocol.handler = { request in
+            let ok = { (data: Data) in
+                (HTTPURLResponse(url: request.url!, statusCode: 200,
+                                 httpVersion: nil, headerFields: nil)!, data)
+            }
+            if request.url?.path.hasSuffix("/key") == true { return ok(Data("{}".utf8)) }
+            return ok(Data("""
+            {"id":"new-1","name":"Kickoff.pptx","folderId":null,"sizeBytes":0,
+             "mimeType":"\(SlideItem.slideMIME)","updatedAt":"2026-08-10T12:00:00","contentVersion":1}
+            """.utf8))
+        }
+
+        _ = try await service.createPresentation(name: "Kickoff", parentID: nil)
+
+        // A `.pptx` is created with no body at all; without this save it would download as zero
+        // bytes. The save is guarded by the version the create returned.
+        let index = try XCTUnwrap(MockURLProtocol.requests.firstIndex {
+            $0.url?.path.hasSuffix("/autosave") == true
+        })
+        let save = MockURLProtocol.requests[index]
+        XCTAssertEqual(save.httpMethod, "PUT")
+        XCTAssertEqual(save.url?.query, "expectedContentVersion=1")
+        let body = MockURLProtocol.bodies[index]
+        // The package is ciphertext on the wire: no zip magic, and no slide XML in the clear.
+        XCTAssertNil(body.range(of: Data([0x50, 0x4B, 0x03, 0x04])))
+        XCTAssertNil(body.range(of: Data("Click to add title".utf8)))
     }
 
     // MARK: - Load
@@ -231,7 +262,7 @@ final class SlideContentServiceTests: XCTestCase {
     func testLoadingDecryptsAndDecodesTheDeck() async throws {
         let dek = Sodium().secretStream.xchacha20poly1305.key()
         let sealed = try service.sealDEK(dek)
-        let ciphertext = try service.encrypt(text: Fixture.seededDeckJSON, dek: dek,
+        let ciphertext = try service.encrypt(data: try Fixture.packagedDeck(), dek: dek,
                                              xcss: Sodium().secretStream.xchacha20poly1305)
         MockURLProtocol.handler = { request in
             let path = request.url?.path ?? ""
@@ -257,6 +288,7 @@ final class SlideContentServiceTests: XCTestCase {
         let loaded = try await service.loadDeck(for: "d1")
 
         XCTAssertEqual(loaded.file.slides.count, 1)
+        XCTAssertEqual(loaded.file.slides.first?.elements.first?.text?.content, "Click to add title")
         XCTAssertEqual(loaded.info.contentVersion, 2)
         XCTAssertFalse(loaded.needsInitialEncryption)
         XCTAssertEqual(loaded.dek, dek)
@@ -293,7 +325,103 @@ final class SlideContentServiceTests: XCTestCase {
         }
     }
 
+    /// Stubs a load whose key ref exists and whose content request answers with `content`.
+    private func stubLoad(content: @escaping (URLRequest) -> (HTTPURLResponse, Data)) throws -> Bytes {
+        let dek = Sodium().secretStream.xchacha20poly1305.key()
+        let sealed = try service.sealDEK(dek)
+        MockURLProtocol.handler = { request in
+            let path = request.url?.path ?? ""
+            let ok = { (data: Data) in
+                (HTTPURLResponse(url: request.url!, statusCode: 200,
+                                 httpVersion: nil, headerFields: nil)!, data)
+            }
+            if path.hasSuffix("/info") {
+                return ok(Data("""
+                {"id":"d1","name":"Kickoff.pptx","sizeBytes":0,"folderId":null,
+                 "mimeType":"\(SlideItem.slideMIME)","updatedAt":"2026-08-10T12:00:00",
+                 "yourRole":"owner","contentVersion":1}
+                """.utf8))
+            }
+            if path.hasSuffix("/key") {
+                return ok(Data("{\"encrypted_file_key\":\"\(sealed.sealed)\",\"key_version\":1}".utf8))
+            }
+            return content(request)
+        }
+        return dek
+    }
+
+    private func status(_ code: Int, _ body: String, for request: URLRequest) -> (HTTPURLResponse, Data) {
+        (HTTPURLResponse(url: request.url!, statusCode: code, httpVersion: nil, headerFields: nil)!,
+         Data(body.utf8))
+    }
+
+    func testADeckWithNoContentYetOpensAsTheDefaultDeckAndAsksToBeWritten() async throws {
+        // A `.pptx` has no body until its first save, and the download endpoint says so with a 409
+        // rather than with zero bytes. The web's `driveReadBytes` reads that as empty; so does this.
+        try stubLoad { self.status(409, #"{"error":{"code":"NO_CONTENT","message":"File has no uploaded content"}}"#,
+                                   for: $0) }
+
+        let loaded = try await service.loadDeck(for: "d1")
+
+        XCTAssertEqual(loaded.file.slides.count, 1)
+        XCTAssertEqual(loaded.file.slides.first?.elements.compactMap(\.text?.content),
+                       ["Click to add title", "Click to add subtitle"])
+        XCTAssertTrue(loaded.needsInitialEncryption)
+    }
+
+    func testABlobMissingFromStorageIsAnErrorNotABlankDeck() async throws {
+        // The row outlived its content. Opening it blank would let the next save paper over a
+        // fault an operator has to look at.
+        try stubLoad { self.status(409, #"{"error":{"code":"CONTENT_MISSING","message":"missing"}}"#,
+                                   for: $0) }
+
+        do {
+            _ = try await service.loadDeck(for: "d1")
+            XCTFail("expected the load to fail")
+        } catch SlideContentError.serverError(let code) {
+            XCTAssertEqual(code, 409)
+        }
+    }
+
+    func testAPlaintextPackageIsReadAsItIsAndNotRewrittenOnOpen() async throws {
+        let package = try Fixture.packagedDeck()
+        try stubLoad { request in
+            (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+             package)
+        }
+
+        let loaded = try await service.loadDeck(for: "d1")
+
+        XCTAssertEqual(loaded.file.slides.first?.elements.count, 2)
+        // A deck from PowerPoint is read lossily; saving it before the user changes anything would
+        // make opening a file the thing that degrades it.
+        XCTAssertFalse(loaded.needsInitialEncryption)
+    }
+
     // MARK: - Save
+
+    func testWhatASaveUploadsIsAnEncryptedPptx() async throws {
+        MockURLProtocol.respond(json: """
+        {"id":"d1","name":"Kickoff.pptx","folderId":null,"sizeBytes":99,
+         "mimeType":"\(SlideItem.slideMIME)","updatedAt":"2026-08-10T12:05:00","contentVersion":8}
+        """)
+        let dek = Sodium().secretStream.xchacha20poly1305.key()
+        let deck = Fixture.deckContent(slides: [Fixture.slide(notes: "Speak slowly")])
+
+        _ = try await service.save(deck, to: "d1", dek: dek)
+
+        let request = try XCTUnwrap(MockURLProtocol.requests.first)
+        let boundary = try XCTUnwrap(request.value(forHTTPHeaderField: "Content-Type")?
+            .components(separatedBy: "boundary=").last)
+        let body = MockURLProtocol.bodies[0]
+        let headerEnd = try XCTUnwrap(body.range(of: Data("\r\n\r\n".utf8)))
+        let trailing = body[headerEnd.upperBound...]
+        let end = try XCTUnwrap(trailing.range(of: Data("\r\n--\(boundary)".utf8)))
+        let plaintext = try service.decrypt(data: Data(trailing[..<end.lowerBound]), dek: dek)
+
+        XCTAssertTrue(PptxCodec.isPackage(plaintext))
+        XCTAssertEqual(try PptxCodec.decode(plaintext), deck)
+    }
 
     func testSaveSendsAMultipartBodyAndGuardsTheVersion() async throws {
         MockURLProtocol.respond(json: """
@@ -316,7 +444,7 @@ final class SlideContentServiceTests: XCTestCase {
         // The rename rides along in the same request rather than needing a second one.
         let body = String(decoding: MockURLProtocol.bodies[0], as: UTF8.self)
         XCTAssertTrue(body.contains("Renamed"))
-        XCTAssertTrue(body.contains("slide.json"))
+        XCTAssertTrue(body.contains("presentation.pptx"))
     }
 
     func testAVersionConflictIsReportedWithTheServersVersion() async throws {

@@ -10,9 +10,9 @@ This roadmap assumes:
 * Reuse the existing Neutrino Auth service and its login flow, through `neutrino_shared_ios`.
 * Reuse Neutrino Drive as the storage layer (`?type=slide` already filters listings server-side).
 * Reuse the existing E2EE key model, key vault and key-import process.
-* Speak the *same file format* as the web app — `slide.json`, the `SlidePresentation` shape in
-  `web/apps/web/src/app/(apps)/slides/editor/slideEditorTypes.ts` — readable in both directions,
-  and losing nothing on a round trip through this app.
+* Speak the *same file format* as the web app — a `.pptx` carrying the `SlidePresentation` shape in
+  `web/apps/web/src/app/(apps)/slides/editor/slideEditorTypes.ts` as its `neutrino/model.json`
+  part — readable in both directions, and losing nothing on a round trip through this app.
 * Follow the phased approach the sibling roadmaps use, so the app is usable early.
 
 ⸻
@@ -34,9 +34,9 @@ Scoping this app means scoping against the TypeScript under
   themes, a slide master (background plus title/body styles), eighteen preset gradients.
 * **Presenting** — full-screen playback with the per-slide transitions, a speaker-notes view, and a
   presenter window.
-* **Import / export** — `.pptx` in and out. A deck created on the web today *is* a `.pptx`
-  (issue #127); the bespoke `application/x-neutrino-slide` JSON predates it and is still read and
-  written for decks created in it, with no migration in either direction.
+* **Import / export** — `.pptx` in and out. Every deck *is* a `.pptx` (issue #127), so both are
+  file copies. The bespoke `application/x-neutrino-slide` JSON that predated it is gone from the
+  server, the web and this app; no file was ever stored in it.
 * **AI** — authoring help, image search, design and autoformat, all on `/api/v1/slides/{id}/ai/*`
   with the user's own provider credentials.
 
@@ -52,14 +52,14 @@ The API this app talks to
 **There is no `/api/v1/slides` CRUD resource for decks.** Per-app editor resources collapsed into
 generic Drive endpoints driven by a mime-type registry (`src/drive/storage/native_types.rs`).
 Membership in that registry is the marker: a file is a presentation because its mime type is
-`application/x-neutrino-slide`, not because a side table says so.
+the `.pptx` type, not because a side table says so — which is also what `?type=slide` matches.
 
 | What | Endpoint |
 | --- | --- |
 | List | `GET /api/v1/drive/folders/{id}?type=slide`, and `/recent`, `/starred`, `/shared-with-me`, `/trash` |
-| Create | `POST /api/v1/drive/files` — client-supplied id, seeded body, one round trip |
+| Create | `POST /api/v1/drive/files` — client-supplied id, no body; the first autosave writes the sealed `.pptx` |
 | Metadata | `GET /api/v1/drive/files/{id}/info` — mime type, `yourRole`, `contentVersion` |
-| Content | `GET /api/v1/drive/files/{id}` / `PUT /api/v1/drive/files/{id}/autosave` |
+| Content | `GET /api/v1/drive/files/{id}` (409 `NO_CONTENT` before the first save) / `PUT /api/v1/drive/files/{id}/autosave` |
 | Keys | `GET` / `PUT /api/v1/drive/files/{id}/key` |
 | Organise | `PATCH /drive/files/{id}`, `/drive/bulk/{trash,move}`, `/drive/trash/*` |
 | Themes | `GET /api/v1/slides/themes` — the one Slides-specific endpoint this app calls |
@@ -68,7 +68,7 @@ Three responsibilities the refactor moved to the client, each called out where i
 `SlideContentService`:
 
 1. **"Is this a presentation?"** — `/info` answers for any file type, so nothing server-side stops
-   this app opening a `.pptx` and rendering an empty deck. `SlideFileInfo.isNativeDeck` is the check.
+   this app opening a spreadsheet and rendering an empty deck. `SlideFileInfo.isNativeDeck` is the check.
 2. **Naive timestamps** — Drive serialises `2026-08-10T12:00:00` with no offset, meaning UTC.
    `DriveDate` reads a zone-less timestamp as UTC rather than local.
 3. **A body that is not a deck** — a truncated upload opens as an empty deck rather than throwing.
@@ -110,6 +110,7 @@ Phase 1 — shipped
 | 9 | Text formatting: the format bar and the format sheet | `ElementFormatBar` |
 | 10 | Design: theme gallery, per-slide background (colour, preset and custom gradients, image URL), transitions, slide master | `ThemeGalleryView`, `BackgroundPickerView` |
 | 12 | Presenter mode: full-screen playback, transitions, speaker notes, auto-advance, idle-timer hold | `PresenterView` |
+| 22 | `.pptx` as the stored format: open any deck — the web's model when the package carries a trusted one, the slides themselves when it does not — and save a package PowerPoint opens with the model packed beside it | `Deck/OOXML/` (`PptxCodec`, `PptxReader`, `PptxWriter`) |
 | 24 | App lock: Face ID / Touch ID, grace period, app-switcher redaction | `neutrino_shared_ios` |
 
 Every epic above has a flag in `Config/FeatureFlags.swift`, defaulting to `true`, so a feature can be
@@ -137,7 +138,6 @@ Phase 3 — later
 | 19 | Live sheet embeds and diagram elements rendered for real | Both are preserved today; rendering one means pulling in another app's format |
 | 20 | Universal Links (`/open/slide/<id>`) | Router and entitlement are in place and tested; `FeatureFlags.appLinks` is off until the deployed `apple-app-site-association` routes `/open/slide/*` here instead of to Drive, sequenced with the App Store release |
 | 21 | Creating and editing themes rather than only applying them | `SlideThemeService` reads `/api/v1/slides/themes`; writing is a web feature today |
-| 22 | Office mode: opening and saving a real `.pptx` in place | Needs a package reader; `SlideItem.isOfficeDeck` is the hook, and a `.pptx` is listed and explained rather than dropped |
 | 23 | AI: authoring help, image search, autoformat | Needs the user's provider credentials on the device |
 | 25 | Collaboration: presence and live co-editing | The web app buffers content until a peer joins; matching that is a project of its own |
 

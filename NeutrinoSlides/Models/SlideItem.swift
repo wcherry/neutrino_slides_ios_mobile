@@ -14,20 +14,22 @@ struct SlideItem: Identifiable, Hashable {
 
     // MARK: - MIME
 
-    /// The MIME type that *makes* a Drive file a presentation.
+    /// What a Neutrino presentation is: a real PowerPoint deck.
     ///
-    /// There is no `slides` marker table and no `/api/v1/slides` CRUD resource for decks:
-    /// membership in the server's `native_types` registry is the marker, and this string is the key
-    /// into it (`src/drive/storage/native_types.rs`). It is also what the server's `type=slide`
-    /// filter matches, and what the client-side "is this a presentation?" check in
-    /// ``SlideContentService/fileInfo(for:)`` compares against. (`/api/v1/slides/themes` does still
-    /// exist — a theme is a user-owned record rather than a file.)
-    static let slideMIME = "application/x-neutrino-slide"
+    /// A presentation created by any Neutrino client is a `.pptx` (`src/drive/storage/native_types.rs`,
+    /// issue #127), which this app reads and writes through ``PptxCodec`` — so PowerPoint, Keynote
+    /// and LibreOffice open one directly, and import and export are file copies. It is also exactly
+    /// what the server's `type=slide` filter matches.
+    ///
+    /// The bespoke `application/x-neutrino-slide` JSON that predates it is gone from this app, as it
+    /// is from the server and the web. Not migrated — no file was ever stored in it — simply no longer
+    /// a format this app reads, writes, lists or routes.
+    static let slideMIME = PptxCodec.mimeType
 
-    /// A real `.pptx`, which the web app writes for decks created after issue #127 and which this
-    /// app cannot open yet — office mode is Epic 22. Recognised so a listing can show the file and
-    /// say why it will not open, rather than dropping it or failing obscurely.
-    static let pptxMIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    /// Whether a Drive file is a Neutrino presentation.
+    static func isPresentation(_ mimeType: String?) -> Bool {
+        mimeType == slideMIME
+    }
 
     // MARK: - Properties
 
@@ -40,7 +42,7 @@ struct SlideItem: Identifiable, Hashable {
     var size: Int64?
     var modifiedAt: Date
     var isTrashed: Bool
-    /// ``slideMIME`` for native presentations; `nil` for folders.
+    /// ``slideMIME`` for presentations; `nil` for folders.
     var mimeType: String?
     /// Drive's `isStarred` flag — the Favorites model shared with the web app, stored on the file or
     /// folder row itself rather than in a list of its own.
@@ -56,36 +58,30 @@ struct SlideItem: Identifiable, Hashable {
 
     /// SF Symbol representing the item in a listing.
     var iconName: String {
-        switch type {
-        case .folder: return "folder.fill"
-        case .file:   return isNativeDeck ? "rectangle.on.rectangle.angled.fill" : "doc.fill"
-        }
+        type == .folder ? "folder.fill" : "rectangle.on.rectangle.angled.fill"
     }
 
-    /// True when this file is a native Neutrino presentation rather than a raw office file.
+    /// True when this file is a Neutrino presentation.
     ///
     /// This is the client-side check the drive refactor made necessary: `/info` answers for *any*
     /// file type now, so nothing server-side will tell the app it opened the wrong thing.
     var isNativeDeck: Bool {
-        type == .file && mimeType == Self.slideMIME
+        type == .file && Self.isPresentation(mimeType)
     }
 
-    /// A deck this app can list but not yet open — a real `.pptx`. Office mode (Epic 22) is what
-    /// turns this into something openable.
-    var isOfficeDeck: Bool {
-        type == .file && mimeType == Self.pptxMIME
-    }
-
-    /// The title to show. A native deck is stored under its plain name, so only a `.pptx` has an
-    /// extension worth hiding — which is exactly what the web app's `stripOoxmlExtension` does.
+    /// The title to show.
+    ///
+    /// A `.pptx` is a real deck and its extension is part of the *file* name — it has to land on
+    /// disk as `Kickoff.pptx` to open on a double-click — but the presentation is called "Kickoff",
+    /// which is what the web library shows too (`stripOoxmlExtension` in `web/packages/api-core`).
     var displayName: String {
-        guard type == .file, isOfficeDeck else { return name }
-        guard let dot = name.lastIndex(of: "."), dot != name.startIndex else { return name }
-        return String(name[..<dot])
+        type == .file ? PptxCodec.strippingExtension(name) : name
     }
 
-    /// The name a "Duplicate" should get: `Kickoff` -> `Kickoff copy`,
-    /// `Kickoff.pptx` -> `Kickoff copy.pptx`.
+    /// The name a "Duplicate" should get: `Kickoff.pptx` -> `Kickoff copy.pptx`.
+    ///
+    /// The extension stays last, because `Kickoff.pptx copy` is a file the operating system no longer
+    /// recognises.
     var duplicateName: String {
         guard let dot = name.lastIndex(of: "."), dot != name.startIndex else {
             return name + " copy"

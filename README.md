@@ -75,8 +75,9 @@ to the format, add it to the round-trip fixture too.
 ## Status
 
 Phase 1 is complete: the shell, the account, Drive integration, the canvas, editing, slide
-management, text formatting, design and presenter mode. Sharing, search, offline, version history and
-office mode (`.pptx`) are next; see `agent_docs/road_map.md` for the epic list and the reasoning.
+management, text formatting, design and presenter mode. A presentation is stored as a real `.pptx`,
+the same package the web writes, so it opens in PowerPoint and Keynote too. Sharing, search, offline
+and version history are next; see `agent_docs/road_map.md` for the epic list and the reasoning.
 
 Universal Links are implemented but switched off (`FeatureFlags.appLinks`): the deployed
 `apple-app-site-association` still routes `/open/slide/*` to Neutrino Drive, and moving it has to be

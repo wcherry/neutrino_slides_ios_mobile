@@ -963,9 +963,11 @@ struct SlideMaster: Codable, Hashable {
 
 // MARK: - SlideDeck
 
-/// A whole presentation: the `{"slides":[…],"theme":{…}}` document stored as `slide.json`.
+/// A whole presentation: the `{"slides":[…],"theme":{…}}` model both editors hold.
 ///
-/// This is the contract with the web app, so both directions matter — see ``decode(from:)``.
+/// This is the contract with the web app, so both directions matter — see ``decode(from:)``. On
+/// Drive it is stored inside a `.pptx` (``PptxCodec``), as the package's `neutrino/model.json` part
+/// beside the slides PowerPoint reads; ``packaged()`` and ``decodePackage(from:)`` are that layer.
 struct SlideDeck: Hashable {
 
     var slides: [Slide]
@@ -985,8 +987,8 @@ struct SlideDeck: Hashable {
         self.unknownFields = unknownFields
     }
 
-    /// The deck the web editor shows for a new file, and what the server seeds `slide.json` with
-    /// (`EMPTY_SLIDES_CONTENT` in `src/drive/storage/native_types.rs`): one title slide.
+    /// The deck the web editor shows for a new file — its `makeDefaultPresentation()`: one title
+    /// slide. A new `.pptx` is created with no body at all, and this is what its first save writes.
     static var empty: SlideDeck {
         SlideDeck(
             slides: [
@@ -1060,13 +1062,10 @@ extension SlideDeck: Codable {
 
 extension SlideDeck {
 
-    /// Decodes a stored deck body, tolerating what the server can hand back.
+    /// Decodes the model JSON — the string a `.pptx` carries in its `neutrino/model.json` part.
     ///
-    /// Unlike a spreadsheet's `sheet.json`, the seeded body of a new presentation is already in
-    /// this shape — `EMPTY_SLIDES_CONTENT` is a real one-slide deck — so there is no second format
-    /// to convert. What still has to be tolerated is a body that will not parse at all (a truncated
-    /// upload, a file that was never a deck) and a parsed deck with no slides in it: both open as
-    /// ``empty``, matching the web editor's `catch { … makeDefaultPresentation() }`.
+    /// What has to be tolerated is JSON that will not parse at all and a parsed deck with no slides
+    /// in it: both open as ``empty``, matching the web editor's `catch { … makeDefaultPresentation() }`.
     ///
     /// A deck that *is* readable is never replaced, however little of it this app understands. Only
     /// a failure to parse produces a default, and only then because there is nothing else to show.
@@ -1078,7 +1077,8 @@ extension SlideDeck {
         return deck
     }
 
-    /// Encodes the deck as the web app writes it.
+    /// Encodes the model JSON as the web app writes it — the string packed into a `.pptx`, not the
+    /// stored body itself; that is ``packaged()``.
     ///
     /// `.sortedKeys` is what makes a round trip byte-stable: `JSONEncoder` orders dictionary keys
     /// arbitrarily otherwise, so the same deck saved twice would produce two different blobs, and
@@ -1088,6 +1088,29 @@ extension SlideDeck {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         return try encoder.encode(self)
+    }
+
+    // MARK: Stored body
+
+    /// Decodes a presentation's stored body — `.pptx` bytes — tolerating what the server can hand
+    /// back.
+    ///
+    /// A presentation is created with **no body at all** (an OOXML package is a zip the server has
+    /// no business building), so zero bytes is the normal state of a deck created moments ago and
+    /// opens as ``empty``; the editor's first save is what writes a real package. Bytes that are not
+    /// a package, or a package with no slide in it, open the same way rather than as an error the
+    /// user cannot act on.
+    static func decodePackage(from data: Data) -> SlideDeck {
+        guard !data.isEmpty, let deck = try? PptxCodec.decode(data), !deck.slides.isEmpty else {
+            return .empty
+        }
+        return deck
+    }
+
+    /// The `.pptx` bytes to store: PresentationML for every other tool, with this model packed in
+    /// beside it for the two Neutrino editors.
+    func packaged() throws -> Data {
+        try PptxCodec.encode(self)
     }
 }
 
