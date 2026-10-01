@@ -19,7 +19,7 @@ enum SlideContentError: LocalizedError {
     case networkError(underlying: Error)
     case serverError(statusCode: Int)
     case decodingError(underlying: Error)
-    /// The file exists but is not a native Neutrino presentation — a raw `.xlsx`, say.
+    /// The file exists but is not a presentation — an `.xlsx`, say.
     case notAPresentation(mimeType: String?)
     case notFound
     /// The server refused the write because the deck moved on since this device read it.
@@ -38,7 +38,7 @@ enum SlideContentError: LocalizedError {
         case .serverError(let code): return "Server error (\(code))."
         case .decodingError(let err): return "Failed to read server response: \(err.localizedDescription)"
         case .notAPresentation:
-            return "This file isn\u{2019}t a Neutrino presentation. Opening PowerPoint files on iOS is not supported yet."
+            return "This file isn\u{2019}t a presentation."
         case .notFound:         return "That presentation is no longer available."
         case .contentVersionConflict:
             return "This presentation changed on another device since it was opened. Reload to get the latest version, or keep your copy."
@@ -89,10 +89,12 @@ struct SealedFileKey: Equatable {
 /// 1. **"Is this a presentation?"** — `/info` answers for any file type. See ``fileInfo(for:)``.
 /// 2. **Naive timestamps** — Drive serialises `2026-08-10T12:00:00` with no offset, meaning UTC.
 ///    Handled by `DriveDate`, which reads a zone-less timestamp as UTC rather than local.
-/// 3. **A body that is not a deck at all** — a truncated upload, or a file that never held one.
-///    Handled by ``SlideDeck/decode(from:)``, which opens an empty deck rather than throwing.
-///    (Unlike a spreadsheet's, a presentation's *seeded* body is already a real one-slide deck —
-///    `EMPTY_SLIDES_CONTENT` in `native_types.rs` — so there is no second format to convert.)
+/// 3. **The body of a new file** — a `.pptx` is created with no content at all, because a zip is
+///    not something the server has any business building, and the download endpoint answers that
+///    with 409 `NO_CONTENT` rather than zero bytes. ``createPresentation(name:parentID:body:)``
+///    writes a real, sealed package straight after the create; ``loadDeck(for:)`` reads the gap in
+///    between as an empty deck, and ``SlideDeck/decodePackage(from:)`` does the same for a body that
+///    is not a deck at all.
 ///
 /// ## What is never logged
 ///
@@ -123,9 +125,9 @@ final class SlideContentService: ObservableObject {
 
     private static let decoder: JSONDecoder = DriveDate.makeDecoder(convertFromSnakeCase: true)
 
-    /// The multipart filename the web editor writes under. The server does not key off it, but
-    /// matching keeps a Drive listing's "last write" indistinguishable between the two clients.
-    private static let contentFileName = "slide.json"
+    /// The multipart filename a save is sent under. The server does not key off it; the web sends
+    /// the deck's own file name, and a `.pptx` name keeps the part self-describing either way.
+    private static let contentFileName = "presentation.pptx"
 
     // MARK: - Init
 
@@ -138,24 +140,21 @@ final class SlideContentService: ObservableObject {
 
     /// Creates a presentation and returns it.
     ///
-    /// **One request, not two.** `POST /drive/files` takes a *client-supplied* id and seeds the body
-    /// itself from the mime-type registry, so the create and the first content write are a single
-    /// round trip — and the caller can open the editor on the id it generated without waiting for
-    /// the response. The Docs app's older `POST /drive/files/upload` two-step is deliberately not
-    /// followed here.
+    /// `POST /drive/files` takes a *client-supplied* id, so the caller can open the editor on the id
+    /// it generated without waiting for the response. The Docs app's older
+    /// `POST /drive/files/upload` two-step is deliberately not followed here.
     ///
-    /// The key is stored in a second call because the create endpoint has no field for it. That is
-    /// the same shape the web app uses: create, then `PUT /files/{id}/key`.
+    /// The key is stored in a second call because the create endpoint has no field for it, and the
+    /// body in a third. That is the same shape the web app uses: create, `PUT /files/{id}/key`,
+    /// then autosave.
     ///
-    /// - Parameter body: content to write instead of leaving the server's default — used by
-    ///   Duplicate.
+    /// The body cannot ride along in `initialContent`, which would be the obvious shortcut and is
+    /// wrong: the server writes that field with `write_text_content`, verbatim and unencrypted.
+    /// Putting ciphertext there would store Base64 *text* that no subsequent load could decrypt, and
+    /// putting the package there would leave a copy of the deck in plaintext on the server. So the
+    /// field is left nil and the real body goes up encrypted through autosave.
     ///
-    ///   It is written by a *second* request rather than through `initialContent`, which would be
-    ///   the obvious shortcut and is wrong: the server writes that field with `write_text_content`,
-    ///   verbatim and unencrypted. Putting ciphertext there would store Base64 *text* that no
-    ///   subsequent load could decrypt, and putting the JSON there would leave a copy of the
-    ///   original's contents in plaintext on the server. So the field is left nil, the file is
-    ///   created with the seeded default, and the real body goes up encrypted through autosave.
+    /// - Parameter body: content to write instead of the default one-slide deck — used by Duplicate.
     func createPresentation(name: String, parentID: String?,
                             body: SlideDeck? = nil) async throws -> SlideItem {
         let id = UUID().uuidString
@@ -164,8 +163,8 @@ final class SlideContentService: ObservableObject {
 
         let dek: Bytes = Self.sodium.secretStream.xchacha20poly1305.key()
 
-        let request = APICreateFileRequest(id: id, name: name, mimeType: SlideItem.slideMIME,
-                                           folderId: parentID)
+        let request = APICreateFileRequest(id: id, name: PptxCodec.withExtension(name),
+                                           mimeType: SlideItem.slideMIME, folderId: parentID)
         var urlRequest = try makeRequest(method: "POST", path: "/api/v1/drive/files", token: token)
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.httpBody = try JSONEncoder().encode(request)
@@ -192,11 +191,15 @@ final class SlideContentService: ObservableObject {
         )
         item.contentVersion = created.contentVersion
 
-        if let body {
+        // Always written, even for a brand-new presentation with no body of its own. `POST
+        // /drive/files` creates a `.pptx` with *no content at all*, so this first save is what makes
+        // the file both a real deck and an encrypted one. Without it a new presentation downloads as
+        // zero bytes, which PowerPoint cannot open.
+        do {
             // The DEK is carried over rather than re-fetched: the key was generated on this device
             // moments ago, and going back to `/files/{id}/key` for it would be a round trip to be
             // told something already known.
-            let saved = try await save(body, to: item.id, dek: dek,
+            let saved = try await save(body ?? .empty, to: item.id, dek: dek,
                                        expectedContentVersion: item.contentVersion)
             item.modifiedAt = saved.updatedAt
             item.size = saved.sizeBytes
@@ -213,25 +216,27 @@ final class SlideContentService: ObservableObject {
         /// Held for the editing session so subsequent saves need neither a re-fetch nor a re-unseal.
         var dek: Bytes
         var info: SlideFileInfo
-        /// True when the server still holds the plaintext body it seeded at create time, so the
-        /// first save has to encrypt it. See ``loadDeck(for:)``.
+        /// True when the server holds no sealed package yet — the file was created with no body, or
+        /// with a plaintext one — so the first save has to write and encrypt it. See
+        /// ``loadDeck(for:)``.
         var needsInitialEncryption: Bool
     }
 
     /// Downloads, decrypts and decodes a deck.
     ///
-    /// The awkward case is a brand-new presentation. `POST /drive/files` writes the default body as
-    /// **plaintext**, before any client has generated a key for the file, and the first client save
-    /// is what encrypts it. So a decryption failure here has two possible meanings, and telling them
-    /// apart matters a great deal:
+    /// Whether the stored bytes are ciphertext is read off the bytes, the way the web's office-mode
+    /// loader does it in `SlideEditor.tsx`:
     ///
-    /// - The DEK was *just generated* by this device (no key ref existed) — the bytes are the
-    ///   server's plaintext seed. Read them as plaintext and re-save encrypted.
-    /// - The DEK came from an existing key ref — the bytes are ciphertext this device cannot read.
-    ///   Do **not** overwrite them. Whatever is wrong, replacing a file that cannot be decrypted
-    ///   with an empty deck would turn a recoverable fault into data loss.
-    ///
-    /// This mirrors `isNewEncryption` in the web app's `useEncryptedDocumentContent`.
+    /// - **No bytes** — a deck created moments ago, before any client wrote its first package. It
+    ///   opens as the default deck and is saved straight away, so a deck opened and closed again does
+    ///   not stay a zero-byte file.
+    /// - **A zip** — a plaintext package, which is what an unencrypted upload is. Ciphertext opening
+    ///   with the zip magic is a 1-in-2^32 accident, so it is read as it is. It is *not* re-saved on
+    ///   open: a deck from PowerPoint is read lossily, and rewriting it before the user has changed
+    ///   anything would make opening a file the thing that degrades it. The first edit seals it.
+    /// - **Anything else** is ciphertext. A failure to decrypt it with a key from an existing key ref
+    ///   is an error, never a reason to overwrite: replacing a file that cannot be decrypted with an
+    ///   empty deck would turn a recoverable fault into data loss.
     func loadDeck(for fileID: String) async throws -> LoadedDeck {
         logger.debug("loadDeck: id=\(fileID, privacy: .public)")
 
@@ -246,21 +251,32 @@ final class SlideContentService: ObservableObject {
 
         var needsInitialEncryption = false
         let plaintext: Data
-        do {
-            plaintext = try decrypt(data: stored, dek: dek)
-        } catch {
-            guard isNewKey else {
-                logger.error("loadDeck: id=\(fileID, privacy: .public) will not decrypt with an existing key")
-                throw SlideContentError.decryptionFailed
-            }
-            logger.debug("loadDeck: id=\(fileID, privacy: .public) holds plaintext seed content")
+        if stored.isEmpty {
+            logger.debug("loadDeck: id=\(fileID, privacy: .public) has no body yet")
             needsInitialEncryption = true
             plaintext = stored
+        } else if PptxCodec.isPackage(stored) {
+            logger.debug("loadDeck: id=\(fileID, privacy: .public) holds a plaintext package")
+            plaintext = stored
+        } else {
+            do {
+                plaintext = try decrypt(data: stored, dek: dek)
+            } catch {
+                guard isNewKey else {
+                    logger.error("loadDeck: id=\(fileID, privacy: .public) will not decrypt with an existing key")
+                    throw SlideContentError.decryptionFailed
+                }
+                // No key existed, so nothing was ever sealed: these bytes are not a deck in any
+                // format, and the default deck replacing them loses nothing.
+                logger.debug("loadDeck: id=\(fileID, privacy: .public) holds unreadable unsealed content")
+                needsInitialEncryption = true
+                plaintext = stored
+            }
         }
 
         // Lenient by contract, not by accident: an unreadable body opens as an empty deck rather
-        // than as an error the user cannot act on. See `SlideDeck.decode(from:)`.
-        let file = SlideDeck.decode(from: plaintext)
+        // than as an error the user cannot act on. See `SlideDeck.decodePackage(from:)`.
+        let file = SlideDeck.decodePackage(from: plaintext)
         logger.debug("loadDeck succeeded: id=\(fileID, privacy: .public) slides=\(file.slides.count)")
         return LoadedDeck(file: file, dek: dek, info: info,
                               needsInitialEncryption: needsInitialEncryption)
@@ -290,7 +306,8 @@ final class SlideContentService: ObservableObject {
         let contentVersion: Int?
     }
 
-    /// Encrypts `file` with the deck's DEK and PUTs it to the autosave endpoint.
+    /// Packages `file` as a `.pptx`, encrypts it with the deck's DEK and PUTs it to the autosave
+    /// endpoint.
     ///
     /// `expectedContentVersion` is the version this edit was written against. Passing it makes the
     /// server reject the write outright — as ``SlideContentError/contentVersionConflict(current:)``
@@ -310,8 +327,7 @@ final class SlideContentService: ObservableObject {
         let token = try await authorizedToken()
 
         let xcss = Self.sodium.secretStream.xchacha20poly1305
-        let plaintext = String(decoding: try file.encoded(), as: UTF8.self)
-        let ciphertext = try encrypt(text: plaintext, dek: dek, xcss: xcss)
+        let ciphertext = try encrypt(data: try file.packaged(), dek: dek, xcss: xcss)
 
         // The autosave endpoint expects a multipart "file" part — sending raw bytes as
         // application/octet-stream trips actix-multipart's ContentTypeIncompatible check.
@@ -347,8 +363,8 @@ final class SlideContentService: ObservableObject {
     ///
     /// **This is where "is it a presentation?" is decided.** `/info` answers for every file type
     /// since the drive refactor — the endpoint no longer knows or cares that the caller wanted a
-    /// presentation — so nothing server-side will stop this app opening a `.pptx` and rendering an
-    /// empty deck. Callers read ``SlideFileInfo/isNativeDeck``.
+    /// presentation — so nothing server-side will stop this app opening a spreadsheet and rendering
+    /// an empty deck. Callers read ``SlideFileInfo/isNativeDeck``.
     ///
     /// Returns nil when the file is gone (404) or not shared with this account (403) — both mean
     /// "not mine to read" rather than an error worth surfacing.
@@ -373,20 +389,24 @@ final class SlideContentService: ObservableObject {
 
     // MARK: - Crypto (internal, for unit testing)
 
-    /// Encrypts `text` as `[24-byte header][ciphertext]` using an XChaCha20-Poly1305 secretstream.
-    func encrypt(text: String, dek: Bytes, xcss: SecretStream.XChaCha20Poly1305) throws -> Data {
+    /// Encrypts `data` as `[24-byte header][ciphertext]` using an XChaCha20-Poly1305 secretstream —
+    /// the web's `encryptFile`, byte for byte.
+    ///
+    /// Takes bytes rather than text because a presentation is a `.pptx` — a zip, which is not UTF-8
+    /// and would not survive being carried through a `String`.
+    func encrypt(data: Data, dek: Bytes, xcss: SecretStream.XChaCha20Poly1305) throws -> Data {
         guard let stream = xcss.initPush(secretKey: dek) else { throw SlideContentError.encryptionFailed }
         let header = stream.header()
-        guard let cipher = stream.push(message: Array(text.utf8), tag: .FINAL) else {
+        guard let cipher = stream.push(message: Array(data), tag: .FINAL) else {
             throw SlideContentError.encryptionFailed
         }
         return Data(header + cipher)
     }
 
-    /// Reverses ``encrypt(text:dek:xcss:)``.
+    /// Reverses ``encrypt(data:dek:xcss:)``.
     ///
     /// Returns `Data` rather than `String` because the caller has to be able to hand the *stored*
-    /// bytes to the JSON decoder when decryption fails on a plaintext seed, and a lossy
+    /// bytes to the package reader when they turn out not to be ciphertext, and a lossy
     /// `String(decoding:)` in between would quietly mangle anything that was not UTF-8.
     func decrypt(data: Data, dek: Bytes) throws -> Data {
         guard data.count > Self.secretStreamHeaderSize else {
@@ -526,10 +546,13 @@ final class SlideContentService: ObservableObject {
     }
 
     /// Drive wraps errors as `{"error": {"code", "message"}}`.
-    private static func isContentVersionConflict(_ data: Data) -> Bool {
+    private static func errorCode(in data: Data) -> String? {
         struct Envelope: Decodable { struct Body: Decodable { let code: String }; let error: Body }
-        guard let envelope = try? JSONDecoder().decode(Envelope.self, from: data) else { return false }
-        return envelope.error.code == "CONTENT_VERSION_CONFLICT"
+        return (try? JSONDecoder().decode(Envelope.self, from: data))?.error.code
+    }
+
+    private static func isContentVersionConflict(_ data: Data) -> Bool {
+        errorCode(in: data) == "CONTENT_VERSION_CONFLICT"
     }
 
     /// The server states the version it holds in the conflict message. Recovering it saves a round
@@ -558,9 +581,19 @@ final class SlideContentService: ObservableObject {
         }
     }
 
+    /// The stored body, or no bytes when the file has none yet.
+    ///
+    /// A `.pptx` has no content until its first save, and the download endpoint answers that with
+    /// 409 `NO_CONTENT` rather than with zero bytes. Only that code is read as "empty", the way the
+    /// web's `driveReadBytes` does it: `CONTENT_MISSING` means the row outlived its blob, which is a
+    /// real fault, and opening it as a blank deck would let the next save paper over it.
     private func fetchEncryptedContent(fileID: String, token: String) async throws -> Data {
         let request = try makeRequest(method: "GET", path: "/api/v1/drive/files/\(fileID)", token: token)
         let (data, response) = try await self.data(for: request)
+        if let http = response as? HTTPURLResponse, http.statusCode == 409,
+           Self.errorCode(in: data) == "NO_CONTENT" {
+            return Data()
+        }
         try Self.checkStatus(response)
         return data
     }

@@ -12,19 +12,24 @@ final class ModelTests: XCTestCase {
 
     // MARK: - SlideItem
 
-    func testOnlyANeutrinoDeckIsANativePresentation() {
+    func testAPptxIsAPresentation() {
+        XCTAssertEqual(SlideItem.slideMIME,
+                       "application/vnd.openxmlformats-officedocument.presentationml.presentation")
         XCTAssertTrue(Fixture.deck().isNativeDeck)
-        XCTAssertFalse(Fixture.deck(mimeType: SlideItem.pptxMIME).isNativeDeck)
-        XCTAssertTrue(Fixture.deck(mimeType: SlideItem.pptxMIME).isOfficeDeck)
+        XCTAssertFalse(Fixture.deck(mimeType: Fixture.spreadsheetMIME).isNativeDeck)
+        // The bespoke JSON type is gone from the server and the web; nothing here reads it either.
+        XCTAssertFalse(Fixture.deck(mimeType: "application/x-neutrino-slide").isNativeDeck)
         XCTAssertFalse(Fixture.folder().isNativeDeck)
     }
 
-    func testOnlyAnOfficeFilesExtensionIsHidden() {
-        // A native deck is stored under its plain name, so there is nothing to strip.
+    func testThePptxExtensionIsHiddenFromTheTitle() {
+        XCTAssertEqual(Fixture.deck(name: "Q3 Review.pptx").displayName, "Q3 Review")
+        XCTAssertEqual(Fixture.deck(name: "Q3 Review.PPTX").displayName, "Q3 Review")
         XCTAssertEqual(Fixture.deck(name: "Q3 Review").displayName, "Q3 Review")
-        XCTAssertEqual(Fixture.deck(name: "Q3 Review.pptx",
-                                    mimeType: SlideItem.pptxMIME).displayName, "Q3 Review")
+        // Only the modern extension is file plumbing; anything else is part of the name.
+        XCTAssertEqual(Fixture.deck(name: "Old.ppt").displayName, "Old.ppt")
         XCTAssertEqual(Fixture.deck(name: ".hidden").displayName, ".hidden")
+        XCTAssertEqual(Fixture.folder(name: "Decks.pptx").displayName, "Decks.pptx")
     }
 
     func testDuplicateNamesKeepTheExtensionWhereThereIsOne() {
@@ -97,7 +102,6 @@ final class ModelTests: XCTestCase {
         // The shared package decides this, and a change to it reaches this app only when this app
         // ships a build against the new version — which is why it is asserted here too.
         XCTAssertEqual(NeutrinoAppLink.kind(forMIME: SlideItem.slideMIME), .slide)
-        XCTAssertEqual(NeutrinoAppLink.kind(forMIME: SlideItem.pptxMIME), .slide)
         XCTAssertEqual(NeutrinoAppLink.url(kind: .slide, fileID: "abc")?.absoluteString,
                        "https://www.getneutrino.app/open/slide/abc")
     }

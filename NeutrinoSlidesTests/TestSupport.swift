@@ -163,8 +163,8 @@ enum Fixture {
         SlideDeck(slides: slides, theme: theme, master: master)
     }
 
-    /// The body the server seeds a brand-new presentation with — `EMPTY_SLIDES_CONTENT` in
-    /// `src/drive/storage/native_types.rs`, byte for byte.
+    /// The web's default deck as model JSON — `makeDefaultPresentation()`, and what the server used
+    /// to seed a presentation with before decks became `.pptx` files with no seed at all.
     static let seededDeckJSON = """
     {"slides":[{"id":"s1","background":{"type":"color","value":"#ffffff"},"elements":[\
     {"id":"e1","type":"text","x":10,"y":30,"w":80,"h":20,"content":"Click to add title",\
@@ -176,6 +176,14 @@ enum Fixture {
     "backgroundColor":"#ffffff","textColor":"#1f2937","accentColor":"#818cf8",\
     "fontFamily":"Inter","defaultTransition":"fade"}}
     """
+
+    /// `json` as the stored body of a presentation: a `.pptx` with the model packed in.
+    static func packagedDeck(_ json: String = seededDeckJSON) throws -> Data {
+        try SlideDeck.decode(from: Data(json.utf8)).packaged()
+    }
+
+    /// A file type that is not a presentation, for the "refuse it" paths.
+    static let spreadsheetMIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
     // MARK: - Drive JSON
 

@@ -94,19 +94,40 @@ final class SlidesDriveServiceTests: XCTestCase {
     // MARK: - Single item
 
     func testFetchingAnItemRefusesAFileThatIsNotAPresentation() async {
-        MockURLProtocol.respond(json: Fixture.fileJSON(mimeType: SlideItem.pptxMIME))
+        MockURLProtocol.respond(json: Fixture.fileJSON(mimeType: Fixture.spreadsheetMIME))
 
         do {
             _ = try await service.fetchItem(id: "deck-1")
             XCTFail("expected notFound")
         } catch SlidesDriveError.notFound {
-            // Expected: an `/open/slide/…` link that names a `.pptx` is a malformed link.
+            // Expected: an `/open/slide/…` link that names a spreadsheet is a malformed link.
         } catch {
             XCTFail("expected notFound, got \(error)")
         }
     }
 
+    func testFetchingAnItemResolvesAPptx() async throws {
+        MockURLProtocol.respond(json: Fixture.fileJSON(name: "Kickoff.pptx"))
+
+        let item = try await service.fetchItem(id: "deck-1")
+
+        XCTAssertTrue(item.isNativeDeck)
+        XCTAssertEqual(item.displayName, "Kickoff")
+    }
+
     // MARK: - Mutations
+
+    func testRenamingKeepsExactlyOnePptxExtension() async {
+        let item = Fixture.deck(id: "d1", name: "Old.pptx")
+        service = SlidesDriveService(home: [item], session: MockURLProtocol.makeSession())
+        MockURLProtocol.respond(json: Fixture.fileJSON(id: "d1", name: "New.pptx"))
+
+        service.rename(itemID: "d1", to: "New.pptx")
+        XCTAssertEqual(service.item(id: "d1")?.name, "New.pptx")
+
+        service.rename(itemID: "d1", to: "  ")
+        XCTAssertEqual(service.item(id: "d1")?.name, "Untitled presentation.pptx")
+    }
 
     func testRenameIsOptimisticAndRolledBackWhenTheServerRefuses() async {
         let item = Fixture.deck(id: "d1", name: "Old")
@@ -114,7 +135,7 @@ final class SlidesDriveServiceTests: XCTestCase {
         MockURLProtocol.respond(json: "{}", statusCode: 500)
 
         service.rename(itemID: "d1", to: "New")
-        XCTAssertEqual(service.item(id: "d1")?.name, "New", "the row changes before the request")
+        XCTAssertEqual(service.item(id: "d1")?.name, "New.pptx", "the row changes before the request")
 
         try? await Task.sleep(nanoseconds: 200_000_000)
 

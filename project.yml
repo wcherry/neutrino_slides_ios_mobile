@@ -36,6 +36,12 @@ targets:
         product: NeutrinoCrypto
       - package: NeutrinoShared
         product: NeutrinoUI
+      # Zip and XML plumbing only — `ZipArchive` and `XMLElement`, Foundation + Compression, no
+      # dependency on anything else in the package. Reading and writing the `.pptx` itself is
+      # `Deck/OOXML/` in this repo: the mapping is Slides-shaped, so it does not belong in a package
+      # the other five apps rebuild against.
+      - package: NeutrinoShared
+        product: NeutrinoOOXML
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.neutrino.slides

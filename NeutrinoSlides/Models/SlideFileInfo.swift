@@ -8,7 +8,7 @@ import NeutrinoCore
 /// This is the only Drive endpoint that answers for a file the caller can *access* rather than one
 /// the caller *owns*, which makes it the right source for three things:
 ///
-/// - `mimeType` — whether the file is a native presentation at all. `/info` answers for every file
+/// - `mimeType` — whether the file is a presentation at all. `/info` answers for every file
 ///   type, so this check has to happen here; see ``isNativeDeck``.
 /// - `yourRole` — what this account may do with the deck, which decides whether the editor is
 ///   writable.
@@ -58,14 +58,11 @@ struct SlideFileInfo: Decodable, Hashable {
     /// True when the file is still somewhere an edit can land.
     var isLive: Bool { deletedAt == nil }
 
-    /// True when this file is a native Neutrino presentation.
+    /// True when this file is a Neutrino presentation — a `.pptx`.
     ///
-    /// The web client synthesises its own 404 when this is false, and that is load-bearing rather
-    /// than incidental: office mode (Epic 22) keys off exactly that signal to decide it must read
-    /// the file as a `.pptx` package. Phase 1 has no office mode, so a false here is reported to
-    /// the user as "this isn't a presentation this app can open" — but the *check* lives here from
-    /// the start, so Epic 22 has a hook rather than a rewrite.
-    var isNativeDeck: Bool { mimeType == SlideItem.slideMIME }
+    /// `/info` answers for every file type, so nothing server-side stops this app opening a
+    /// spreadsheet as a deck; this is the check that does.
+    var isNativeDeck: Bool { SlideItem.isPresentation(mimeType) }
 
     /// Whether this account may write to the deck.
     var isEditable: Bool { yourRole.canEdit }

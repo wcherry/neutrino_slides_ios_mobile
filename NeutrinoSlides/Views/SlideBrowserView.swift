@@ -147,7 +147,6 @@ struct SlideBrowserView: View {
                 }
             }
 
-            // Duplicating a raw .pptx would mean reading the package, which is Epic 22's job.
             if item.isNativeDeck {
                 Button {
                     duplicate(item)
@@ -303,11 +302,6 @@ struct SlideRowView: View {
     }
 
     private var subtitle: String {
-        // A real .pptx is listed but cannot be opened yet, and saying so in the row is kinder
-        // than letting the user tap into an error.
-        if item.isOfficeDeck {
-            return "PowerPoint file \u{00B7} not supported yet"
-        }
         var parts = [Self.dateFormatter.localizedString(for: item.modifiedAt, relativeTo: Date())]
         if let size = item.size, item.type == .file {
             parts.append(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))

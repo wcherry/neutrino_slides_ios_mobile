@@ -30,9 +30,12 @@ enum SlidesDriveError: LocalizedError {
 /// Browses and organises the presentations stored in Neutrino Drive.
 ///
 /// Reuses Drive's existing folder / file / trash APIs — Slides has no backend of its own. Every
-/// listing passes `type=slide`, so the server returns only files whose MIME type is
-/// `application/x-neutrino-slide`; folders come back unfiltered because a folder may hold
-/// presentations whatever else is in it.
+/// listing passes `type=slide`, so the server returns only `.pptx` files; folders come back
+/// unfiltered because a folder may hold presentations whatever else is in it.
+///
+/// Unlike Sheets, which had to widen its listings to `type=office`, Slides needs no change here:
+/// the server re-pointed `DriveFileType::Slide` at the `.pptx` mime type when it dropped the bespoke
+/// JSON format (`slide_matches_only_the_pptx_mime` in `src/drive/filesystem/dto.rs`).
 ///
 /// There is no whole-drive `type=` listing — `type` always scopes to one folder (or the `/starred`,
 /// `/recent`, `/trash`, `/shared-with-me` views, which support it directly). A user's root folder
@@ -82,8 +85,8 @@ final class SlidesDriveService: ObservableObject {
 
     private var baseURL: String { AuthService.baseURL }
 
-    /// The `type=` filter value that selects native presentations server-side
-    /// (`DriveFileType::Slide` -> `application/x-neutrino-slide`).
+    /// The `type=` filter value that selects presentations server-side
+    /// (`DriveFileType::Slide` -> the `.pptx` mime type).
     private static let typeFilter = "slide"
 
     private static let decoder: JSONDecoder = {
@@ -164,13 +167,12 @@ final class SlidesDriveService: ObservableObject {
     /// the user is browsing. A Universal Link is not: it names a file that may sit in a folder
     /// nobody has opened, or one shared by another account, so there is no listing to read it out of.
     ///
-    /// Throws ``SlidesDriveError/notFound`` for a file that is not a native presentation — the app
-    /// link vocabulary is per-app, so an `/open/slide/…` link pointing at a document is a malformed
-    /// link rather than something to render badly. A `.pptx` fails the same check, which is right
-    /// until office mode (Epic 22) can open one.
+    /// Throws ``SlidesDriveError/notFound`` for a file that is not a presentation — the app link
+    /// vocabulary is per-app, so an `/open/slide/…` link pointing at a document is a malformed link
+    /// rather than something to render badly.
     func fetchItem(id: String) async throws -> SlideItem {
         let file: APIFileResponse = try await get("/api/v1/drive/files/\(id)/metadata")
-        guard file.mimeType == SlideItem.slideMIME else {
+        guard SlideItem.isPresentation(file.mimeType) else {
             logger.error("fetchItem: \(id, privacy: .public) is \(file.mimeType, privacy: .public), not a presentation")
             throw SlidesDriveError.notFound
         }
@@ -618,9 +620,13 @@ final class SlidesDriveService: ObservableObject {
     /// extension, a bespoke-JSON presentation is identified by its MIME type alone — the extension
     /// carries nothing there, and adding one would
     /// only show up as a stray `.slide` in every listing on the web.
+    /// The Drive file name for a presentation the user called `name`.
+    ///
+    /// The `.pptx` goes on here, once, so a download lands on disk as something PowerPoint opens;
+    /// typing "Kickoff.pptx" into the rename field must not produce `Kickoff.pptx.pptx`.
     private func normalizedName(_ name: String) -> String {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? "Untitled presentation" : trimmed
+        let trimmed = PptxCodec.strippingExtension(name.trimmingCharacters(in: .whitespacesAndNewlines))
+        return PptxCodec.withExtension(trimmed.isEmpty ? "Untitled presentation" : trimmed)
     }
 
     // MARK: - HTTP

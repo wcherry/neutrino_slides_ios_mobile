@@ -39,7 +39,7 @@ final class DeckEditorModelTests: XCTestCase {
                           saveBody: String? = nil) throws -> Bytes {
         let dek = Sodium().secretStream.xchacha20poly1305.key()
         let sealed = try service.sealDEK(dek)
-        let ciphertext = try service.encrypt(text: deck, dek: dek,
+        let ciphertext = try service.encrypt(data: try Fixture.packagedDeck(deck), dek: dek,
                                              xcss: Sodium().secretStream.xchacha20poly1305)
         MockURLProtocol.handler = { request in
             let path = request.url?.path ?? ""
@@ -90,7 +90,7 @@ final class DeckEditorModelTests: XCTestCase {
             let trailing = body[headerEnd.upperBound...]
             guard let end = trailing.range(of: Data("\r\n--\(boundary)".utf8)) else { return nil }
             let ciphertext = Data(trailing[..<end.lowerBound])
-            return SlideDeck.decode(from: try service.decrypt(data: ciphertext, dek: dek))
+            return SlideDeck.decodePackage(from: try service.decrypt(data: ciphertext, dek: dek))
         }
     }
 
@@ -122,8 +122,8 @@ final class DeckEditorModelTests: XCTestCase {
     func testAFileThatIsNotAPresentationIsRefused() async throws {
         MockURLProtocol.handler = { request in
             let data = Data("""
-            {"id":"d1","name":"Deck.pptx","sizeBytes":10,"folderId":null,
-             "mimeType":"\(SlideItem.pptxMIME)","updatedAt":"2026-08-10T12:00:00",
+            {"id":"d1","name":"Budget.xlsx","sizeBytes":10,"folderId":null,
+             "mimeType":"\(Fixture.spreadsheetMIME)","updatedAt":"2026-08-10T12:00:00",
              "yourRole":"owner"}
             """.utf8)
             return (HTTPURLResponse(url: request.url!, statusCode: 200,
@@ -505,7 +505,7 @@ final class DeckEditorModelTests: XCTestCase {
         XCTAssertFalse(model.hasUnsavedChanges)
     }
 
-    func testANewDecksPlaintextSeedIsEncryptedOnOpen() async throws {
+    func testANewDeckWithNoBodyIsWrittenAsASealedPackageOnOpen() async throws {
         let dek = Sodium().secretStream.xchacha20poly1305.key()
         let sealed = try service.sealDEK(dek)
         MockURLProtocol.handler = { request in
@@ -534,8 +534,9 @@ final class DeckEditorModelTests: XCTestCase {
                 """.utf8))
             }
             if path.hasSuffix("/key") { return ok(Data("{\"encryptedFileKey\":\"\(sealed.sealed)\"}".utf8)) }
-            // The plaintext the server seeded at create time.
-            return ok(Data(Fixture.seededDeckJSON.utf8))
+            // A `.pptx` the web created and nobody has opened: no content at all.
+            return (HTTPURLResponse(url: request.url!, statusCode: 409, httpVersion: nil, headerFields: nil)!,
+                    Data(#"{"error":{"code":"NO_CONTENT","message":"File has no uploaded content"}}"#.utf8))
         }
 
         await model.load()
@@ -544,6 +545,6 @@ final class DeckEditorModelTests: XCTestCase {
         XCTAssertEqual(model.slides.count, 1)
         XCTAssertTrue(MockURLProtocol.requests.contains {
             $0.httpMethod == "PUT" && $0.url?.path.hasSuffix("/autosave") == true
-        }, "the plaintext seed has to be replaced with ciphertext on open")
+        }, "an empty deck has to become a real, sealed package on open")
     }
 }

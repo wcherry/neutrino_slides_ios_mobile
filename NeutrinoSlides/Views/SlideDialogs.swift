@@ -127,7 +127,7 @@ struct RenameSheet: View {
             }
             .navigationTitle("Rename")
             .navigationBarTitleDisplayMode(.inline)
-            .onAppear { name = item.name }
+            .onAppear { name = item.displayName }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
@@ -142,7 +142,7 @@ struct RenameSheet: View {
 
     private func rename() {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty, trimmed != item.name else {
+        guard !trimmed.isEmpty, trimmed != item.displayName else {
             dismiss()
             return
         }

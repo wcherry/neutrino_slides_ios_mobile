@@ -66,7 +66,7 @@ final class DeckEditorModel: ObservableObject {
     /// The version the loaded content was read at, sent as `expectedContentVersion` on the next save
     /// and advanced by each successful one.
     private var contentVersion: Int?
-    /// True until the plaintext the server seeded at create time has been replaced by ciphertext.
+    /// True until a sealed package has replaced a body that was empty or unreadable at load.
     private var needsInitialEncryption = false
 
     /// Epic 7 — "Undo / redo".
@@ -109,7 +109,8 @@ final class DeckEditorModel: ObservableObject {
 
     // MARK: - Derived
 
-    var title: String { info?.name ?? item.name }
+    /// The name without its `.pptx`, which is file plumbing rather than part of the title.
+    var title: String { PptxCodec.strippingExtension(info?.name ?? item.name) }
 
     /// Whether this account may write to the deck. A presentation shared read-only opens in a
     /// viewer, and every editing affordance is hidden rather than disabled-on-tap.
@@ -166,9 +167,9 @@ final class DeckEditorModel: ObservableObject {
             selectedElementID = nil
             history.clear()
 
-            // A brand-new presentation is still holding the server's *plaintext* seed. Encrypting
-            // it is the first thing to do, before the user can change anything in it — but through
-            // the save chain, so it can never race a save triggered moments later by a fast edit.
+            // A presentation with no sealed package yet — created moments ago with no body at all
+            // — gets one first, before the user can change anything. Through the save chain, so it
+            // can never race a save triggered moments later by a fast edit.
             if needsInitialEncryption {
                 logger.debug("load: id=\(self.item.id, privacy: .public) needs initial encryption")
                 queueSave()
