@@ -1,5 +1,6 @@
 import XCTest
 import Sodium
+import NeutrinoCore
 @testable import NeutrinoSlides
 
 /// The encrypted body: the round trip, the key handling, and the three checks the server no longer
@@ -322,6 +323,58 @@ final class SlideContentServiceTests: XCTestCase {
             XCTFail("expected the load to fail")
         } catch SlideContentError.decryptionFailed {
             // Expected.
+        }
+    }
+
+    // MARK: - Offline copies
+
+    private func installOfflineCache() {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("slides-ofc-\(UUID().uuidString)")
+        service.offlineCache = OfflineFileCache(directory: directory)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+    }
+
+    func testAnOpenedDeckOpensReadOnlyFromItsOfflineCopyWhenTheServerIsUnreachable() async throws {
+        installOfflineCache()
+        var dek: Bytes = []
+        dek = try stubLoad { request in
+            let ciphertext = try! self.service.encrypt(data: try! Fixture.packagedDeck(), dek: dek,
+                                                       xcss: Sodium().secretStream.xchacha20poly1305)
+            return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, ciphertext)
+        }
+        let online = try await service.loadDeck(for: "d1")
+        XCTAssertNil(online.offlineCopyDate)
+
+        MockURLProtocol.handler = { _ in throw URLError(.notConnectedToInternet) }
+        let offline = try await service.loadDeck(for: "d1")
+
+        XCTAssertNotNil(offline.offlineCopyDate)
+        XCTAssertEqual(offline.file.slides.count, online.file.slides.count)
+        XCTAssertEqual(offline.dek, dek)
+        XCTAssertEqual(offline.info.name, "Kickoff.pptx")
+        XCTAssertEqual(offline.info.contentVersion, 1)
+        XCTAssertEqual(service.offlineCopies.map(\.id), ["d1"])
+    }
+
+    func testAPlaintextPackageIsNeverKept() async throws {
+        installOfflineCache()
+        try stubLoad { request in
+            (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+             try! Fixture.packagedDeck())
+        }
+        _ = try await service.loadDeck(for: "d1")
+        XCTAssertTrue(service.offlineCopies.isEmpty, "the cache holds nothing a stolen disk could read")
+    }
+
+    func testWithNoOfflineCopyTheNetworkErrorStands() async {
+        installOfflineCache()
+        MockURLProtocol.handler = { _ in throw URLError(.notConnectedToInternet) }
+        do {
+            _ = try await service.loadDeck(for: "d1")
+            XCTFail("expected the network error")
+        } catch SlideContentError.networkError {
+        } catch {
+            XCTFail("unexpected \(error)")
         }
     }
 

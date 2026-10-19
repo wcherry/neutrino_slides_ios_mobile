@@ -1,4 +1,5 @@
 import SwiftUI
+import NeutrinoCore
 
 // MARK: - DeckEditorView
 
@@ -20,6 +21,7 @@ struct DeckEditorView: View {
     @EnvironmentObject private var driveService: SlidesDriveService
     @EnvironmentObject private var themeService: SlideThemeService
     @EnvironmentObject private var settings: AppSettings
+    @EnvironmentObject private var networkMonitor: NetworkMonitor
     @Environment(\.scenePhase) private var scenePhase
 
     // MARK: - State
@@ -84,6 +86,17 @@ struct DeckEditorView: View {
                 // moment the app is reliably given time to finish a request.
                 if phase != .active { flush() }
             }
+            // An offline copy is swapped for the real deck as soon as the server is back. A deck
+            // that failed to open at all is tried again too.
+            .onChange(of: networkMonitor.isOnline) { online in
+                guard online else { return }
+                if model.offlineCopyDate != nil {
+                    Task { await model.reloadFromServer() }
+                } else if model.loadError != nil, model.deck == nil {
+                    model.loadError = nil
+                    Task { await model.load() }
+                }
+            }
             .sheet(isPresented: $showRename) { RenameSheet(item: item) }
             .sheet(isPresented: $showLayouts) {
                 LayoutGalleryView(theme: model.theme, master: model.master) { layout in
@@ -140,6 +153,22 @@ struct DeckEditorView: View {
             }
     }
 
+    /// Says that what is on screen is this device's copy, and that it cannot be edited.
+    private func offlineCopyBanner(_ kept: Date) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "lock.doc")
+            Text("Offline copy from \(kept.formatted(.relative(presentation: .named))). Read-only until you're back online.")
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal)
+        .padding(.vertical, 6)
+        .background(.bar)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("offlineCopyBanner")
+    }
+
     @ViewBuilder
     private var content: some View {
         if model.isLoading && model.deck == nil {
@@ -149,6 +178,9 @@ struct DeckEditorView: View {
             errorState(loadError)
         } else {
             VStack(spacing: 0) {
+                if let kept = model.offlineCopyDate {
+                    offlineCopyBanner(kept)
+                }
                 canvas
 
                 if model.isEditable, model.selectedElement != nil {
