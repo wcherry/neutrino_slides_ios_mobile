@@ -70,7 +70,7 @@ final class SlideThemeService: ObservableObject {
             var request = URLRequest(url: url)
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
-            let (data, response) = try await session.data(for: request)
+            let (data, response) = try await session.data(for: request, retry: .default)
             guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
                 logger.error("load themes: unexpected response")
                 return

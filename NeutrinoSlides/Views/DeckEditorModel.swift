@@ -34,6 +34,9 @@ final class DeckEditorModel: ObservableObject {
     @Published private(set) var isSaving = false
     @Published private(set) var hasUnsavedChanges = false
     @Published var loadError: String?
+    /// Set when the deck on screen is this device's offline copy, kept on this date, because the
+    /// server could not be reached. It is read-only until reloaded from the server.
+    @Published private(set) var offlineCopyDate: Date?
     @Published var saveError: String?
     /// A short, self-clearing message for something worth saying but not worth interrupting for —
     /// "Slide deleted", or the note that a pasted element landed off the slide.
@@ -115,7 +118,7 @@ final class DeckEditorModel: ObservableObject {
     /// Whether this account may write to the deck. A presentation shared read-only opens in a
     /// viewer, and every editing affordance is hidden rather than disabled-on-tap.
     var isEditable: Bool {
-        FeatureFlags.deckEditing && (info?.isEditable ?? false)
+        FeatureFlags.deckEditing && (info?.isEditable ?? false) && offlineCopyDate == nil
     }
 
     var slides: [Slide] { deck?.slides ?? [] }
@@ -163,6 +166,7 @@ final class DeckEditorModel: ObservableObject {
             dek = loaded.dek
             contentVersion = loaded.info.contentVersion
             needsInitialEncryption = loaded.needsInitialEncryption
+            offlineCopyDate = loaded.offlineCopyDate
             selectedSlideIndex = 0
             selectedElementID = nil
             history.clear()
@@ -721,6 +725,16 @@ final class DeckEditorModel: ObservableObject {
             logger.error("save failed: \(error, privacy: .public)")
             saveError = error.localizedDescription
         }
+    }
+
+    /// Replaces an offline copy with the server's deck, once there is a connection. Nothing to
+    /// lose: an offline copy cannot be edited.
+    func reloadFromServer() async {
+        guard offlineCopyDate != nil, !isLoading else { return }
+        deck = nil
+        history.clear()
+        historyToken &+= 1
+        await load()
     }
 
     // MARK: - Conflict resolution
