@@ -331,8 +331,8 @@ struct ImageElement: Hashable {
 
 // MARK: - OpaqueElement
 
-/// An element of a kind this app does not model — a live sheet embed, a video, a diagram, or
-/// whatever a later web release invents.
+/// An element of a kind this app does not model — a live sheet embed, a video, a diagram, a live
+/// drawing (a pasted Drawing selection), or whatever a later web release invents.
 ///
 /// Kept whole rather than dropped, for the reason ``JSONValue`` exists: a phone that cannot render
 /// a spreadsheet embed must still not be the thing that deletes it. Geometry is the one part read
@@ -380,6 +380,7 @@ struct OpaqueElement: Hashable {
         case "sheetEmbed": return "Spreadsheet"
         case "video":      return "Video"
         case "diagram":    return "Diagram"
+        case "drawing":    return "Drawing"
         default:           return kind.capitalized
         }
     }
@@ -389,6 +390,7 @@ struct OpaqueElement: Hashable {
         case "sheetEmbed": return "tablecells"
         case "video":      return "play.rectangle"
         case "diagram":    return "flowchart"
+        case "drawing":    return "scribble.variable"
         default:           return "square.on.square.dashed"
         }
     }
