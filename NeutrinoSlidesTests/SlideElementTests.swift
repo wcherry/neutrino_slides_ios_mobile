@@ -12,6 +12,15 @@ final class SlideElementTests: XCTestCase {
         XCTAssertEqual(Fixture.opaqueElement(kind: "video").kind, "video")
     }
 
+    /// A live drawing pasted on the web shows on the phone as a labelled placeholder, kept whole.
+    func testALiveDrawingIsAPlaceholderNamedForWhatItIs() throws {
+        guard case .opaque(let drawing) = Fixture.opaqueElement(kind: "drawing") else {
+            return XCTFail("expected an opaque element")
+        }
+        XCTAssertEqual(drawing.displayName, "Drawing")
+        XCTAssertEqual(drawing.iconName, "scribble.variable")
+    }
+
     func testWithNewIDChangesOnlyTheID() {
         let original = Fixture.textElement(id: "t1", content: "Hello")
 
