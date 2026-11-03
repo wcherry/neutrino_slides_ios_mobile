@@ -434,7 +434,7 @@ final class DeckEditorModelTests: XCTestCase {
         model.queueSave()
         await model.flush()
 
-        let puts = MockURLProtocol.requests.filter { $0.httpMethod == "PUT" }
+        let puts = MockURLProtocol.requests.filter { $0.httpMethod == "PUT" && $0.url?.path.hasSuffix("/autosave") == true }
         XCTAssertLessThanOrEqual(puts.count, 3, "queued saves must coalesce, not stack up")
         XCTAssertFalse(model.hasUnsavedChanges)
     }
@@ -446,7 +446,7 @@ final class DeckEditorModelTests: XCTestCase {
 
         await model.flush()
 
-        let put = try XCTUnwrap(MockURLProtocol.requests.first { $0.httpMethod == "PUT" })
+        let put = try XCTUnwrap(MockURLProtocol.requests.first { $0.httpMethod == "PUT" && $0.url?.path.hasSuffix("/autosave") == true })
         XCTAssertEqual(put.url?.query, "expectedContentVersion=4")
     }
 
@@ -463,10 +463,10 @@ final class DeckEditorModelTests: XCTestCase {
         XCTAssertEqual(model.conflict?.serverVersion, 9)
         XCTAssertTrue(model.hasUnsavedChanges)
 
-        let before = MockURLProtocol.requests.filter { $0.httpMethod == "PUT" }.count
+        let before = MockURLProtocol.requests.filter { $0.httpMethod == "PUT" && $0.url?.path.hasSuffix("/autosave") == true }.count
         model.saveIfNeeded()
         await model.flush()
-        XCTAssertEqual(MockURLProtocol.requests.filter { $0.httpMethod == "PUT" }.count, before,
+        XCTAssertEqual(MockURLProtocol.requests.filter { $0.httpMethod == "PUT" && $0.url?.path.hasSuffix("/autosave") == true }.count, before,
                        "an unresolved conflict must not be saved over")
     }
 
@@ -484,7 +484,7 @@ final class DeckEditorModelTests: XCTestCase {
         model.keepLocalCopyAfterConflict()
         await model.flush()
 
-        let put = try XCTUnwrap(MockURLProtocol.requests.last { $0.httpMethod == "PUT" })
+        let put = try XCTUnwrap(MockURLProtocol.requests.last { $0.httpMethod == "PUT" && $0.url?.path.hasSuffix("/autosave") == true })
         XCTAssertEqual(put.url?.query, "expectedContentVersion=9")
         XCTAssertNil(model.conflict)
     }

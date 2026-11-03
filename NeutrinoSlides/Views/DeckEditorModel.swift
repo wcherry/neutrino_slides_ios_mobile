@@ -60,6 +60,8 @@ final class DeckEditorModel: ObservableObject {
 
     private let item: SlideItem
     private var contentService: SlideContentService
+    /// Keeps the Drive preview showing slide one. Made on load, once the file is known.
+    private var previewer: SlidePreviewer?
     private weak var driveService: SlidesDriveService?
 
     // MARK: - Session state
@@ -170,6 +172,13 @@ final class DeckEditorModel: ObservableObject {
             selectedSlideIndex = 0
             selectedElementID = nil
             history.clear()
+
+            // An offline copy is read-only and its preview is the server's business.
+            if offlineCopyDate == nil {
+                let previewer = SlidePreviewer(fileID: item.id, contentService: contentService)
+                self.previewer = previewer
+                previewer.loaded(loaded.file, hasPreview: loaded.info.hasPreview, canEdit: isEditable)
+            }
 
             // A presentation with no sealed package yet — created moments ago with no body at all
             // — gets one first, before the user can change anything. Through the save chain, so it
@@ -707,6 +716,7 @@ final class DeckEditorModel: ObservableObject {
                                                        expectedContentVersion: contentVersion)
             contentVersion = result.contentVersion
             needsInitialEncryption = false
+            previewer?.saved(deck, hasPreview: result.hasPreview)
             driveService?.presentationWasSaved(itemID: item.id, size: result.sizeBytes,
                                                modifiedAt: result.updatedAt,
                                                contentVersion: result.contentVersion)
